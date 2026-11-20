@@ -177,13 +177,19 @@ def run(targets,checkout,out,bundle,fast_bundle=False,*,project_modules=None):
       for f in path.parent.glob(path.name+'.*'):
        if f.is_file() and not f.is_symlink():tar.add(f,arcname=str(f.relative_to(build)),recursive=False)
    receipt['bundle_sha256']=digest(artifact)
- (output/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+ receipt_temp=output/'receipt.json.tmp'
+ receipt_temp.write_text(json.dumps(receipt,indent=2)+'\n')
+ receipt_temp.replace(output/'receipt.json')
  print('Saved',output,'with exit status',result.returncode)
  return result.returncode
 def main():
  p=argparse.ArgumentParser(description=__doc__);s=p.add_subparsers(dest='action',required=True)
  nx=s.add_parser('next');nx.add_argument('--limit',type=int,default=8)
- nx.add_argument('--cold',action='store_true',help='show available individual modules with no project imports')
+ mode=nx.add_mutually_exclusive_group()
+ mode.add_argument('--warm',type=Path,metavar='INVENTORY',help='rank disjoint builds against a worker inventory')
+ nx.add_argument('--primary-inventory',type=Path,help='skip targets already on the primary')
+ nx.add_argument('--max-builds',type=int,default=3,help='maximum estimated project modules per warm suggestion')
+ mode.add_argument('--cold',action='store_true',help='show available individual modules with no project imports')
  nx.add_argument('--include-partial',action='store_true',help='also list partially completed packets (up to --limit more) whose open modules can be claimed individually')
  for n in ['show','claim','build']:
   sub=s.add_parser(n);sub.add_argument('target')
@@ -197,7 +203,17 @@ def main():
   return run(targets,a.checkout,a.output,a.bundle,a.fast_bundle,project_modules=project_modules)
  rows=load()
  if a.action=='next':
+  if a.primary_inventory and not a.warm:p.error('--primary-inventory requires --warm')
+  if a.max_builds < 1:p.error('--max-builds must be positive')
   busy=claims()
+  if a.warm:
+   from replay_evidence import read_inventory
+   from warm import suggestions
+   cached=set(read_inventory(a.warm)['modules'])
+   primary=set(read_inventory(a.primary_inventory)['modules']) if a.primary_inventory else set()
+   for row,cost,consumers in suggestions(rows,busy,cached,primary,a.limit,a.max_builds):
+    print(row['id'],row['packet'],'estimated project builds',cost,'direct consumers',consumers)
+   return 0
   if a.cold:
    for row,sole,direct in cold_modules(rows,busy)[:max(0,a.limit)]:
     print(row['id'],row['packet'],row['module'],'sole-project-import consumers',sole,'direct consumers',direct)

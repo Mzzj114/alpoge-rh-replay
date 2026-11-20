@@ -1,0 +1,62 @@
+name: Replay batch 2
+on:
+  push:
+    branches: [volunteer/batch2]
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LEAN_NUM_THREADS: "2"
+      UPSTREAM: rohanarun/alpoge-rh-replay
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rohanarun/alpoge-rh-replay
+          ref: 264e2ee3d0241ab0cd3d7508548a36253856bad8
+          persist-credentials: false
+      - name: Confirm all six reservations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          for pair in M115005:2637 M115006:2638 M115806:2643 M153485:2646 M154041:2651 M040070:2656; do
+            task="${pair%:*}"
+            issue="${pair#*:}"
+            gh api "repos/$UPSTREAM/issues/$issue" | jq -e --arg title "Claim $task" \
+              '.user.login=="Mzzj114" and .title==$title and .state=="open" and any(.labels[]; .name=="claim-granted")'
+            gh api "repos/$UPSTREAM/issues/$issue/comments" | jq -e --arg prefix "Granted \`$task\`." \
+              'any(.[]; .user.login=="github-actions[bot]" and (.body|startswith($prefix)))'
+          done
+      - name: Prepare disk and install pinned elan
+        run: |
+          set -eu
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 4 -o elan.tgz https://github.com/leanprover/elan/releases/download/v4.4.0/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo '0e8250aa2be86c7af929ade68db617af9edc8b9ccf6eaf5ece228250d0d032e2  elan.tgz' | sha256sum -c -
+          tar xf elan.tgz elan-init
+          ./elan-init -y --no-modify-path --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Verify the original archive and fetch pinned dependencies
+        run: bash ./verify.sh "$RUNNER_TEMP/vol" --prepare-only
+      - name: Compile each reserved target and produce separate receipts
+        run: |
+          status=0
+          for task in M115005 M115006 M115806 M153485 M154041 M040070; do
+            python3 tracker/tasks.py build "$task" "$RUNNER_TEMP/vol/lean" "$RUNNER_TEMP/receipts/$task" --bundle || status=1
+          done
+          exit "$status"
+      - name: Preserve receipts, exact logs, and bundles
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: replay-evidence
+          path: |
+            ${{ runner.temp }}/receipts/
+            ${{ runner.temp }}/vol/replay.log
+          retention-days: 14
+          if-no-files-found: warn
